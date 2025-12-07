@@ -1,171 +1,273 @@
 import streamlit as st
-from openai import OpenAI
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import requests
-from io import BytesIO
+import numpy as np
 
-# --- 1. API 클라이언트 초기화 ---
-# 🔑 Streamlit Cloud Secrets에서 API Key를 안전하게 불러옵니다.
-try:
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-except KeyError:
-    st.error("오류: OpenAI API Key가 Streamlit Secrets에 설정되지 않았습니다. 대시보드에서 설정해주세요.")
-    st.stop()
-except Exception:
-    # 로컬 테스트 환경 등 예외 처리
-    client = None
+# --- 1. 기본 설정 및 API URL ---
+MET_API_URL = "https://collectionapi.metmuseum.org/public/collection/v1/"
 
 # --- 2. 세션 상태 초기화 ---
 if 'step' not in st.session_state:
     st.session_state.step = 0
-    st.session_state.start_text = None
-    st.session_state.image_url = None
-    st.session_state.final_text = None
-    st.session_state.user_topic = ""
-    st.session_state.start_role = "AI 시인"
+    st.session_state.search_results_details = None  # 검색 결과 상세 정보 저장
+    st.session_state.analyzed_artworks = {}         # 분석 대상 작품 데이터 저장
+    st.session_state.df_palette = pd.DataFrame()     # 시각화용 통합 데이터프레임
 
+# --- 3. API 및 데이터 시뮬레이션 함수 ---
 
-# --- 3. 핵심 변환 함수 ---
-
-@st.cache_data(show_spinner="1단계: AI 시인 역할로 시작 텍스트 생성 중...")
-def generate_start_text(topic, role):
-    """LLM을 이용해 시적인 시작 텍스트를 생성합니다 (Step 1)."""
-    system_prompt = f"당신은 '{role}' 역할입니다. 주어진 주제에 대해 50자 내외의 시적인 구절이나 짧은 스토리를 생성하세요. 창의적이고 감성적인 표현을 사용해야 합니다."
+@st.cache_data(show_spinner=False)
+def search_artworks(query):
+    """MET API의 search 엔드포인트를 이용해 작품 ID 목록을 가져옵니다."""
+    if not query:
+        return 0, []
     
+    # 이미지가 있고, 검색어를 포함하는 작품만 검색
+    search_url = f"{MET_API_URL}search?q={query}&hasImages=true&limit=20" 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini", # 비용 효율을 위해 mini 사용
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"주제: {topic}"}
-            ]
-        )
-        return response.choices[0].message.content
+        response = requests.get(search_url)
+        response.raise_for_status()
+        data = response.json()
+        return data.get('total', 0), data.get('objectIDs', [])[:10] # 상위 10개만 사용
     except Exception as e:
-        return f"텍스트 생성 오류: {e}"
+        return 0, []
 
-@st.cache_data(show_spinner="2단계: DALL·E 모델로 이미지 생성 중...")
-def generate_image_from_text(prompt):
-    """DALL·E 3를 이용해 텍스트 기반 이미지를 생성합니다 (Step 2)."""
+@st.cache_data(show_spinner=False)
+def get_artwork_details(object_id):
+    """지정된 object_id의 작품 상세 정보를 가져옵니다."""
+    url = f"{MET_API_URL}objects/{object_id}"
     try:
-        response = client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="standard",
-            n=1
-        )
-        # 생성된 이미지 URL 반환 (임시 URL)
-        return response.data[0].url
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        
+        return {
+            "title": data.get("title", "제목 없음"),
+            "artist": data.get("artistDisplayName", "작가 미상"),
+            "year": data.get("objectDate", "불명"),
+            "image_url": data.get("primaryImage", None),
+            "object_id": object_id
+        }
     except Exception as e:
-        return f"이미지 생성 오류: {e}"
+        return None
 
-@st.cache_data(show_spinner="3단계: 최종 텍스트(묘사) 역변환 중...")
-def analyze_image_to_text(image_url):
-    """멀티모달 LLM을 이용해 이미지를 분석하고 묘사 텍스트를 생성합니다 (Step 3)."""
-    # Vision 기능을 활용하여 이미지 URL을 직접 입력합니다.
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": "당신은 전문 예술 비평가입니다. 이 이미지를 보고 느낀 것을 100자 이내로 자세하게 묘사하고 분석해 주세요. 색상, 구도, 분위기를 명확히 언급해야 합니다."},
-                    {"type": "image_url", "image_url": {"url": image_url}}
-                ]}
-            ]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"이미지 분석 오류: {e}"
+def simulate_palette_data(object_id, title, artist):
+    """
+    작품 ID를 기반으로 시뮬레이션된 색채 분석 데이터를 생성합니다.
+    (실제 프로젝트에서는 이 함수 내에서 K-Means 클러스터링을 실행해야 함)
+    """
+    np.random.seed(object_id % 100) # ID에 따른 시드 설정으로 데이터 변화 유도
+    
+    # 주 색상 팔레트와 빈도를 무작위로 생성 (실제 데이터를 모방)
+    hex_options = ['#A2C4D8', '#F2E8D5', '#3A5C3C', '#F7DC6F', '#C4B4D8', 
+                   '#5A7B8E', '#1D2E40', '#111111', '#F9F9F9', '#E74C3C', 
+                   '#F1C40F', '#3498DB', '#C4A86A']
+    
+    # 상위 5개 색상 선택
+    selected_hex = np.random.choice(hex_options, size=5, replace=False)
+    
+    # 빈도 생성 및 정규화
+    frequencies = np.random.rand(5)
+    frequencies = frequencies / np.sum(frequencies)
+    
+    data = {
+        'Artist': [artist] * 5,
+        'Artwork': [title] * 5,
+        'Color_HEX': selected_hex.tolist(),
+        'Frequency': frequencies.tolist(),
+        'Artwork_ID': [object_id] * 5
+    }
+    return pd.DataFrame(data)
 
-# --- 4. Streamlit UI 시작 ---
-st.set_page_config(layout="wide", page_title="AI 변환 사슬")
-st.title("🔗 AI 변환 사슬: 전달 왜곡 분석")
-st.markdown("텍스트 $\\rightarrow$ 이미지 $\\rightarrow$ 텍스트 변환 사슬을 통해 AI 모델 간의 **정보 전달 왜곡**을 탐구합니다.")
+# --- 4. 시각화 함수 (Plotly) ---
+
+def create_heatmap(df):
+    """작가별 작품별 색상 빈도 히트맵을 생성합니다."""
+    # Heatmap의 인덱스를 'Artist: Artwork'으로 병합하여 상세하게 표시
+    df['Artist_Artwork'] = df['Artist'] + ": " + df['Artwork']
+    
+    pivot_table = df.pivot_table(index='Artist_Artwork', columns='Color_HEX', values='Frequency', aggfunc='sum').fillna(0)
+    
+    fig = px.imshow(
+        pivot_table,
+        x=pivot_table.columns,
+        y=pivot_table.index,
+        color_continuous_scale='Inferno',
+        text_auto=".2f",
+        title="분석 대상 작품별 주 색상 빈도 히트맵"
+    )
+    fig.update_xaxes(title="주요 색상 (HEX Code)")
+    fig.update_yaxes(title="작품 (Artwork)", autorange="reversed")
+    fig.update_layout(height=max(400, len(pivot_table) * 50), coloraxis_colorbar=dict(title="빈도 비율"))
+    return fig
+
+def create_pie_chart(df, artwork_id):
+    """선택된 작품의 색상 비율 도넛 차트를 생성합니다."""
+    df_artwork = df[df['Artwork_ID'] == artwork_id]
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=[f"{row['Color_HEX']}" for idx, row in df_artwork.iterrows()], # 레이블을 HEX 코드로
+        values=df_artwork['Frequency'],
+        hole=.3, 
+        marker_colors=df_artwork['Color_HEX'], 
+        textinfo='label+percent',
+        hoverinfo='label+text+percent',
+        text=df_artwork['Color_HEX'] 
+    )])
+    
+    title = df_artwork['Artwork'].iloc[0] if not df_artwork.empty else "작품 없음"
+    fig.update_layout(
+        title_text=f"**{title}** 색상 비율 (Donut Chart)",
+        uniformtext_minsize=12, 
+        uniformtext_mode='hide'
+    )
+    return fig
+
+# --- 5. Streamlit UI 시작 ---
+st.set_page_config(layout="wide", page_title="MET Data Visualization")
+st.title("🔎 작가/작품 검색 기반 색채 분석 대시보드")
 st.markdown("---")
 
-# --- 5. 사이드바: 입력 및 설정 ---
+# --- 6. 사이드바 (작품 검색 및 분석 목록 관리) ---
 with st.sidebar:
-    st.header("입력 및 설정")
+    st.header("1. 작품 검색 (작가/제목)")
     
-    st.session_state.user_topic = st.text_input("주제 키워드 입력", "미래 도시의 고독", key="topic_input")
-    st.session_state.start_role = st.selectbox("LLM 역할 부여", ["AI 시인", "AI 스토리텔러", "AI 철학자"], key="role_select")
-
-    if st.button("워크플로우 시작 (Step 1부터 실행)"):
-        # 상태 리셋 및 1단계 시작
-        st.session_state.step = 1
-        st.session_state.start_text = None
-        st.session_state.image_url = None
-        st.session_state.final_text = None
+    search_query = st.text_input("작가 또는 작품 키워드 입력", key="search_input")
+    
+    if st.button("MET 작품 검색"):
+        if search_query:
+            with st.spinner('MET API로 작품 검색 중...'):
+                total, ids = search_artworks(search_query)
+                
+                if total > 0:
+                    st.session_state.search_results_details = {}
+                    # 검색 결과의 상세 정보를 모두 가져옵니다.
+                    for object_id in ids:
+                        detail = get_artwork_details(object_id)
+                        if detail and detail['image_url']:
+                            st.session_state.search_results_details[object_id] = detail
+                            
+                    st.session_state.step = 1
+                    st.success(f"총 {total}개 작품 중 {len(st.session_state.search_results_details)}개 작품의 정보 로드 완료.")
+                else:
+                    st.warning("검색된 작품이 없습니다.")
+                    st.session_state.step = 0
+            st.rerun()
+        else:
+            st.warning("검색어를 입력해 주세요.")
+            
+    st.markdown("---")
+    
+    st.header("2. 분석 목록")
+    if st.session_state.analyzed_artworks:
+        st.info(f"현재 {len(st.session_state.analyzed_artworks)}개 작품 분석 중")
         
-    if st.session_state.step > 0 and st.button("전체 리셋"):
+        # 분석 목록 표시 및 개별 삭제 기능
+        for obj_id, artwork in list(st.session_state.analyzed_artworks.items()):
+            col_name, col_del = st.columns([3, 1])
+            with col_name:
+                st.caption(f"**{artwork['artist']}** - {artwork['title']}")
+            with col_del:
+                if st.button("❌", key=f"del_{obj_id}"):
+                    del st.session_state.analyzed_artworks[obj_id]
+                    # 데이터프레임 업데이트
+                    st.session_state.df_palette = pd.concat([
+                        simulate_palette_data(a['object_id'], a['title'], a['artist']) 
+                        for a in st.session_state.analyzed_artworks.values()
+                    ])
+                    st.rerun()
+    else:
+        st.caption("분석 대상 작품을 추가해 주세요.")
+    
+    if st.button("전체 리셋"):
         for key in list(st.session_state.keys()):
-            if key not in ['user_topic', 'start_role']: # 입력값은 유지
-                del st.session_state[key]
-        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
+            del st.session_state[key]
+        st.rerun()
 
 # --------------------------------------------------------------------------------------
-# --- 6. 단계별 워크플로우 실행 ---
+# --- 7. 메인 대시보드 (검색 결과 및 시각화 전시) ---
 # --------------------------------------------------------------------------------------
-# 3단 구성 준비
-col1, col2, col3 = st.columns(3)
 
-# Step 1: 시작 텍스트 생성
-with col1:
-    st.header("1. 시작 텍스트")
-    if st.session_state.step == 1:
-        st.session_state.start_text = generate_start_text(st.session_state.user_topic, st.session_state.start_role)
-        st.session_state.step = 2
-        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
-        
-    if st.session_state.start_text:
-        st.markdown(f"**역할:** {st.session_state.start_role}")
-        st.info(st.session_state.start_text)
-        if st.session_state.step == 2 and st.button("Step 2 실행: 이미지 생성", key="btn_step2"):
-            st.session_state.step = 3
-            st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
+if st.session_state.step >= 1 and st.session_state.search_results_details:
+    st.header("🔍 검색 결과: 분석 목록에 추가")
+    
+    col_search_results = st.columns(3)
+    
+    # 검색된 작품 목록 표시
+    for i, (obj_id, detail) in enumerate(st.session_state.search_results_details.items()):
+        with col_search_results[i % 3]:
+            with st.container(border=True):
+                st.caption(f"**{detail['artist']}** ({detail['year']})")
+                st.markdown(f"**{detail['title']}**")
+                
+                # 이미지를 표시하고 분석 대상이 아닐 경우 버튼 표시
+                if detail['image_url']:
+                    st.image(detail['image_url'], width=150)
+                
+                is_analyzed = obj_id in st.session_state.analyzed_artworks
+                
+                if not is_analyzed:
+                    if st.button("➕ 분석 목록에 추가", key=f"add_{obj_id}"):
+                        # 1. 상세 정보를 분석 목록에 추가
+                        st.session_state.analyzed_artworks[obj_id] = detail
+                        
+                        # 2. 색채 분석 데이터 생성 및 통합
+                        new_df = simulate_palette_data(obj_id, detail['title'], detail['artist'])
+                        st.session_state.df_palette = pd.concat([st.session_state.df_palette, new_df], ignore_index=True)
+                        
+                        st.session_state.step = 2 # 분석 데이터 준비 완료
+                        st.rerun()
+                else:
+                    st.success("✅ 분석 목록에 포함됨")
 
-# Step 2: 이미지 생성 및 전시
-with col2:
-    st.header("2. 중간 이미지")
-    if st.session_state.step == 3:
-        st.session_state.image_url = generate_image_from_text(st.session_state.start_text)
-        if st.session_state.image_url and not st.session_state.image_url.startswith("이미지 생성 오류"):
-            st.session_state.step = 4
-        else:
-             st.session_state.step = 99 # 오류 상태
-        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
-        
-    if st.session_state.image_url:
-        st.markdown(f"**프롬프트:** `{st.session_state.start_text}`")
-        if st.session_state.image_url.startswith("이미지 생성 오류"):
-             st.error(st.session_state.image_url)
-        else:
-            # 외부 URL 이미지 로드 (DALL·E는 URL 반환)
-            try:
-                st.image(st.session_state.image_url, caption="DALL·E 3 생성 이미지", use_column_width=True)
-                if st.session_state.step == 4 and st.button("Step 3 실행: 역변환 텍스트 분석", key="btn_step3"):
-                    st.session_state.step = 5
-                    st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
-            except Exception as e:
-                st.error(f"이미지 표시 오류: {e}")
+st.markdown("---")
 
-# Step 3 & 4: 최종 텍스트 생성 및 비교
-with col3:
-    st.header("3. 최종 텍스트 (역변환)")
-    if st.session_state.step == 5:
-        st.session_state.final_text = analyze_image_to_text(st.session_state.image_url)
-        st.session_state.step = 6
-        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
+# --- 8. 시각화 전시 ---
+
+if st.session_state.step >= 2 and not st.session_state.df_palette.empty:
+    
+    st.header("📊 1. 종합 분석: 작품별 주 색상 빈도 히트맵")
+    st.plotly_chart(create_heatmap(st.session_state.df_palette), use_container_width=True)
+
+    st.markdown("---")
+
+    st.header("🎨 2. 개별 작품 상세 색채 분석")
+    
+    # 작품 선택 (Object ID 기준)
+    artwork_options = {
+        f"[{v['artist']}] {v['title']}": k for k, v in st.session_state.analyzed_artworks.items()
+    }
+    
+    selected_title = st.selectbox("상세 분석할 작품을 선택하세요:", list(artwork_options.keys()))
+    selected_id = artwork_options[selected_title]
+    
+    col_chart, col_data = st.columns([2, 1])
+
+    with col_chart:
+        st.plotly_chart(create_pie_chart(st.session_state.df_palette, selected_id), use_container_width=True)
         
-    if st.session_state.final_text:
-        st.info(st.session_state.final_text)
-        st.markdown("---")
-        st.header("4. 결과 분석 및 왜곡 시각화")
+    with col_data:
+        st.subheader("💡 AI Curator 통찰")
         
-        # 간단한 길이 비교 시각화 (왜곡 시각화 예시)
-        len_start = len(st.session_state.start_text)
-        len_final = len(st.session_state.final_text)
-        
-        st.markdown(f"**시작 텍스트 길이:** {len_start}자")
-        st.markdown(f"**최종 텍스트 길이:** {len_final}자")
-        st.warning("*(LLM이 시각 정보를 묘사하며 원본 정보가 손실되거나 새로운 정보가 추가되는 '전달 왜곡' 현상 발생)*")
+        # 선택된 작품의 상세 데이터를 기반으로 분석 메시지 출력
+        df_display = st.session_state.df_palette[st.session_state.df_palette['Artwork_ID'] == selected_id]
+        if not df_display.empty:
+            df_display = df_display.sort_values(by='Frequency', ascending=False)
+            top_color_name = df_display['Color_HEX'].iloc[0]
+            top_color_freq = df_display['Frequency'].iloc[0]
+            
+            st.info(f"**{selected_title}**의 색채 지문은 HEX 코드 **{top_color_name}** 계열이 {top_color_freq:.1%}로 가장 지배적입니다. 이는 작가 **{st.session_state.analyzed_artworks[selected_id]['artist']}**의 해당 시기 작품 경향을 정량적으로 뒷받침합니다.")
+            
+            st.markdown("---")
+            st.subheader("대표 팔레트")
+            for index, row in df_display.iterrows():
+                hex_code = row['Color_HEX']
+                st.markdown(
+                    f"<div style='background-color:{hex_code}; height:25px; width:25px; border: 1px solid #ccc; display: inline-block; margin-right: 10px;'></div>"
+                    f"**{hex_code}** ({row['Frequency']:.1%})", 
+                    unsafe_allow_html=True
+                )
+
+else:
+    st.info("왼쪽 사이드바에서 작가/작품 키워드를 검색하여 분석 대상 작품을 추가해 주세요.")
