@@ -101,7 +101,7 @@ with st.sidebar:
         for key in list(st.session_state.keys()):
             if key not in ['user_topic', 'start_role']: # 입력값은 유지
                 del st.session_state[key]
-        st.experimental_rerun()
+        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
 
 # --------------------------------------------------------------------------------------
 # --- 6. 단계별 워크플로우 실행 ---
@@ -115,14 +115,14 @@ with col1:
     if st.session_state.step == 1:
         st.session_state.start_text = generate_start_text(st.session_state.user_topic, st.session_state.start_role)
         st.session_state.step = 2
-        st.experimental_rerun() # 다음 단계로 전환
+        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
         
     if st.session_state.start_text:
         st.markdown(f"**역할:** {st.session_state.start_role}")
         st.info(st.session_state.start_text)
         if st.session_state.step == 2 and st.button("Step 2 실행: 이미지 생성", key="btn_step2"):
             st.session_state.step = 3
-            st.experimental_rerun()
+            st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
 
 # Step 2: 이미지 생성 및 전시
 with col2:
@@ -133,7 +133,7 @@ with col2:
             st.session_state.step = 4
         else:
              st.session_state.step = 99 # 오류 상태
-        st.experimental_rerun()
+        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
         
     if st.session_state.image_url:
         st.markdown(f"**프롬프트:** `{st.session_state.start_text}`")
@@ -145,7 +145,7 @@ with col2:
                 st.image(st.session_state.image_url, caption="DALL·E 3 생성 이미지", use_column_width=True)
                 if st.session_state.step == 4 and st.button("Step 3 실행: 역변환 텍스트 분석", key="btn_step3"):
                     st.session_state.step = 5
-                    st.experimental_rerun()
+                    st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
             except Exception as e:
                 st.error(f"이미지 표시 오류: {e}")
 
@@ -155,7 +155,7 @@ with col3:
     if st.session_state.step == 5:
         st.session_state.final_text = analyze_image_to_text(st.session_state.image_url)
         st.session_state.step = 6
-        st.experimental_rerun()
+        st.rerun() # 👈 st.experimental_rerun() -> st.rerun() 수정 완료
         
     if st.session_state.final_text:
         st.info(st.session_state.final_text)
