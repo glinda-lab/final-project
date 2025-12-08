@@ -280,3 +280,76 @@ if st.session_state.step >= 2 and not st.session_state.df_palette.empty:
 
 else:
     st.info("왼쪽 사이드바에서 작가/작품 키워드를 검색하여 분석 대상 작품을 추가해 주세요.")
+
+# --- 9. 생성형 추상 포스터 생성 함수 (Conceptual Example - Matplotlib 기반) ---
+# 실제 Streamlit 환경에서는 Streamlit Cloud의 제약으로 인해 
+# Matplotlib Figures를 파일로 저장하거나 표시하는 방식이 필요합니다.
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+def generate_abstract_poster(df_palette, artwork_title, style_preset="Data-Driven"):
+    """분석된 색상과 빈도를 사용하여 추상 포스터를 생성합니다."""
+    
+    # 1. 데이터 기반 색상 및 빈도 추출
+    colors = df_palette['Color_HEX'].tolist()
+    frequencies = df_palette['Frequency'].tolist()
+    
+    # 2. 색상 빈도에 따라 반복 횟수 결정 (데이터 주도)
+    total_layers = 15 
+    colors_to_draw = []
+    for color, freq in zip(colors, frequencies):
+        # 빈도가 높을수록 더 많은 추상 요소를 생성
+        num_blobs = int(total_layers * freq) 
+        colors_to_draw.extend([color] * max(1, num_blobs))
+    
+    np.random.shuffle(colors_to_draw) # 순서 무작위화
+    
+    # 3. Matplotlib Figure 초기화
+    fig, ax = plt.subplots(figsize=(7, 10))
+    ax.set_facecolor('white')
+    ax.axis('off')
+
+    # 4. 데이터 기반 추상 도형 생성 (Wobbly Blob 시뮬레이션)
+    # (실제 blob() 함수 로직이 여기에 들어갑니다. 강의 자료 W03 참조)
+    for i, color in enumerate(colors_to_draw):
+        # 중앙을 중심으로 흩어지도록 위치 조정
+        center_x = 0.5 + np.random.uniform(-0.2, 0.2)
+        center_y = 0.5 + np.random.uniform(-0.2, 0.2)
+        radius = 0.15 + (i * 0.005) # 레이어에 따라 반지름을 미세하게 변화
+        
+        # 여기서 blob 모양을 생성하고 패치로 추가 (생략)
+        # ax.add_patch(blob_patch) 
+        
+        # 단순 사각형으로 시뮬레이션:
+        ax.add_patch(plt.Rectangle((center_x, center_y), radius, radius, 
+                                   color=color, alpha=0.5, 
+                                   transform=ax.transAxes)) 
+
+    ax.set_title(f"Generative Poster: {artwork_title}", fontsize=14)
+    return fig
+
+# --- Streamlit 메인 코드에 통합 (2. 개별 작품 상세 분석 섹션) ---
+# ... (기존 코드 유지)
+
+# 🌟 NEW FEATURE: 생성형 추상 이미지 버튼
+with col_gen:
+    st.subheader("🎨 3. 데이터 기반 추상 포스터 생성")
+    
+    # ... (기존 HTML/CSS 시뮬레이션 코드)
+
+    if st.button("🖼️ 추상 포스터 생성 (Python/Matplotlib 시뮬레이션)"):
+        with st.spinner("색채 데이터를 기반으로 생성 포스터 제작 중..."):
+            
+            # 1. 선택된 작품의 데이터만 필터링
+            df_selected_artwork = st.session_state.df_palette[
+                st.session_state.df_palette['Artwork_ID'] == selected_id
+            ].sort_values(by='Frequency', ascending=False)
+            
+            # 2. 생성 함수 호출 및 결과 표시
+            generated_figure = generate_abstract_poster(
+                df_selected_artwork, 
+                selected_title
+            )
+            st.pyplot(generated_figure)
+            st.success("데이터 기반 생성 포스터가 완성되었습니다!")
